@@ -1,126 +1,104 @@
 <?php
+// api/recipes.php
+require_once 'config.php';
+
 header('Content-Type: application/json');
-require_once '../config/database.php';
+$response = ['success' => false, 'message' => ''];
 
-$action = $_GET['action'] ?? $_POST['action'] ?? '';
+$db = Database::getInstance()->getConnection();
 
-try {
-    $pdo = new PDO("mysql:host=" . DB_HOST . ";dbname=" . DB_NAME, DB_USER, DB_PASS);
-    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-
-    switch ($action) {
-        case 'list':
-            $stmt = $pdo->query("
-                SELECT r.*, m.nombre as menu_name 
-                FROM Recetas r
-                LEFT JOIN Menu m ON r.menu_id = m.id
-                ORDER BY r.nombre
-            ");
-            $recipes = $stmt->fetchAll(PDO::FETCH_ASSOC);
-            echo json_encode($recipes);
-            break;
-
-        case 'get':
-            $id = $_GET['id'];
-            $stmt = $pdo->prepare("SELECT * FROM Recetas WHERE id = ?");
-            $stmt->execute([$id]);
-            $recipe = $stmt->fetch(PDO::FETCH_ASSOC);
-            echo json_encode($recipe);
-            break;
-
-        case 'create':
-        case 'update':
-            $id = $_POST['id'] ?? null;
-            $data = [
-                'nombre' => $_POST['nombre'],
-                'menu_id' => $_POST['menu_id'],
-                'precio_venta' => $_POST['precio_venta'],
-                'porciones' => $_POST['porciones'],
-                'tiempo_preparacion' => $_POST['tiempo_preparacion'],
-                'instrucciones' => $_POST['instrucciones']
-            ];
-
-            // Handle image upload
-            if (!empty($_FILES['imagen']['name'])) {
-                $uploadDir = '../uploads/recipes/';
-                if (!is_dir($uploadDir)) {
-                    mkdir($uploadDir, 0755, true);
+switch ($_SERVER['REQUEST_METHOD']) {
+    case 'GET':
+        if (isset($_GET['action'])) {
+            if ($_GET['action'] === 'getAll') {
+                try {
+                    // Puedes añadir JOINS para mostrar el nombre de los ingredientes, etc.
+                    $stmt = $db->query("SELECT * FROM Recetas");
+                    $response['success'] = true;
+                    $response['data'] = $stmt->fetchAll();
+                } catch (PDOException $e) {
+                    $response['message'] = 'Error al obtener recetas: ' . $e->getMessage();
+                    error_log("Error in recipes.php (GET getAll): " . $e->getMessage());
                 }
-                
-                $fileName = uniqid() . '_' . basename($_FILES['imagen']['name']);
-                $targetPath = $uploadDir . $fileName;
-                
-                if (move_uploaded_file($_FILES['imagen']['tmp_name'], $targetPath)) {
-                    $data['imagen'] = 'uploads/recipes/' . $fileName;
+            } elseif ($_GET['action'] === 'getById' && isset($_GET['id'])) {
+                try {
+                    $stmt = $db->prepare("SELECT * FROM Recetas WHERE id_receta = ?");
+                    $stmt->execute([$_GET['id']]);
+                    $recipe = $stmt->fetch();
+                    if ($recipe) {
+                        $response['success'] = true;
+                        $response['data'] = $recipe;
+                    } else {
+                        $response['message'] = 'Receta no encontrada.';
+                    }
+                } catch (PDOException $e) {
+                    $response['message'] = 'Error al obtener receta: ' . $e->getMessage();
+                    error_log("Error in recipes.php (GET getById): " . $e->getMessage());
                 }
-            }
-
-            if ($action === 'create') {
-                $data['creado_en'] = date('Y-m-d H:i:s');
-                $sql = "INSERT INTO Recetas SET " . implode('=?, ', array_keys($data)) . "=?";
-                $stmt = $pdo->prepare($sql);
-                $stmt->execute(array_values($data));
-                $id = $pdo->lastInsertId();
             } else {
-                $sql = "UPDATE Recetas SET " . implode('=?, ', array_keys($data)) . "=? WHERE id=?";
-                $stmt = $pdo->prepare($sql);
-                $values = array_values($data);
-                $values[] = $id;
-                $stmt->execute($values);
+                $response['message'] = 'Acción GET no válida o ID no especificado.';
             }
+        } else {
+            $response['message'] = 'Acción GET no especificada.';
+        }
+        break;
 
-            // Handle ingredients
-            $ingredients = json_decode($_POST['ingredients'], true);
-            $pdo->beginTransaction();
-            
+    case 'POST':
+        $action = $_POST['action'] ?? null;
+        if ($action === 'add') {
+            $nombre = $_POST['nombre'] ?? null;
+            $descripcion = $_POST['descripcion'] ?? null;
+            // Otros campos de receta...
+
             try {
-                // Delete existing ingredients if updating
-                if ($action === 'update') {
-                    $pdo->prepare("DELETE FROM RecetaIngredientes WHERE receta_id = ?")->execute([$id]);
-                }
-                
-                // Insert new ingredients
-                foreach ($ingredients as $ingredient) {
-                    $stmt = $pdo->prepare("
-                        INSERT INTO RecetaIngredientes 
-                        (receta_id, ingrediente_id, cantidad, porcentaje_merma) 
-                        VALUES (?, ?, ?, ?)
-                    ");
-                    $stmt->execute([
-                        $id,
-                        $ingredient['ingrediente_id'],
-                        $ingredient['cantidad'],
-                        $ingredient['porcentaje_merma']
-                    ]);
-                }
-                
-                $pdo->commit();
-                echo json_encode(['success' => true, 'id' => $id]);
-            } catch (Exception $e) {
-                $pdo->rollBack();
-                echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+                $stmt = $db->prepare("INSERT INTO Recetas (nombre, descripcion /*, ... otros campos */) VALUES (?, ?)");
+                $stmt->execute([$nombre, $descripcion]);
+                $response['success'] = true;
+                $response['message'] = 'Receta agregada con éxito.';
+            } catch (PDOException $e) {
+                $response['message'] = 'Error al agregar receta: ' . $e->getMessage();
+                error_log("Error in recipes.php (POST add): " . $e->getMessage());
             }
-            break;
+        } elseif ($action === 'update') {
+            $id_receta = $_POST['id_receta'] ?? null;
+            $nombre = $_POST['nombre'] ?? null;
+            $descripcion = $_POST['descripcion'] ?? null;
+            // Otros campos de receta...
 
-        case 'delete':
-            $id = $_POST['id'];
-            
-            $pdo->beginTransaction();
             try {
-                $pdo->prepare("DELETE FROM RecetaIngredientes WHERE receta_id = ?")->execute([$id]);
-                $pdo->prepare("DELETE FROM Recetas WHERE id = ?")->execute([$id]);
-                $pdo->commit();
-                echo json_encode(['success' => true]);
-            } catch (Exception $e) {
-                $pdo->rollBack();
-                echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+                $stmt = $db->prepare("UPDATE Recetas SET nombre = ?, descripcion = ? WHERE id_receta = ?");
+                $stmt->execute([$nombre, $descripcion, $id_receta]);
+                $response['success'] = true;
+                $response['message'] = 'Receta actualizada con éxito.';
+            } catch (PDOException $e) {
+                $response['message'] = 'Error al actualizar receta: ' . $e->getMessage();
+                error_log("Error in recipes.php (POST update): " . $e->getMessage());
             }
-            break;
+        } elseif ($action === 'delete') {
+            $id_receta = $_POST['id_receta'] ?? null;
+            try {
+                $stmt = $db->prepare("DELETE FROM Recetas WHERE id_receta = ?");
+                $stmt->execute([$id_receta]);
+                if ($stmt->rowCount() > 0) {
+                    $response['success'] = true;
+                    $response['message'] = 'Receta eliminada con éxito.';
+                } else {
+                    $response['message'] = 'Receta no encontrada para eliminar.';
+                }
+            } catch (PDOException $e) {
+                $response['message'] = 'Error al eliminar receta: ' . $e->getMessage();
+                error_log("Error in recipes.php (POST delete): " . $e->getMessage());
+            }
+        } else {
+            $response['message'] = 'Acción POST no válida.';
+        }
+        break;
 
-        default:
-            echo json_encode(['error' => 'Acción no válida']);
-    }
-} catch (PDOException $e) {
-    echo json_encode(['error' => $e->getMessage()]);
+    default:
+        $response['message'] = 'Método de solicitud no permitido.';
+        http_response_code(405);
+        break;
 }
+
+echo json_encode($response);
 ?>
